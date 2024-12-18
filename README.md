@@ -1,30 +1,17 @@
-# REBEL
-
-This repo covers the implementation for our paper [REBEL](https://arxiv.org/abs/2404.16767). 
+# [REBEL](https://arxiv.org/abs/2404.16767): Reinforcement Learning via Regressing Relative Rewards
 
 Zhaolin Gao, Jonathan D. Chang, Wenhao Zhan, Owen Oertell, Gokul Swamy, Kianté Brantley, Thorsten Joachims, J. Andrew Bagnell, Jason D. Lee, Wen Sun. "REBEL: Reinforcement Learning via Regressing Relative Rewards"
 
 ![front page](./figs/rebel_ffig.png)
 
+Check out our detailed blog post on reproducing the experiments [here](https://huggingface.co/blog/GitBag/rebel).
+
 ## Environment
 
+To replicate the exact environment we used, we recommend installing it with the following command:
 ```
-torch>=2.1.0
-transformers>=4.34
-accelerate>=0.23
-peft==0.6.2
-bitsandbytes>=0.41.1
-deepspeed>=0.10.3
-tyro
-scipy
-rouge
-shortuuid
-jsonlines
-rich
-wandb
-tensorboard
-pandas
-evaluate
+conda env create -f ./envs/rebel_env.yml
+conda env create -f ./envs/vllm_env.yml
 ```
 
 ## TL;DR Summarization
