@@ -100,7 +100,7 @@ class Args:
     """Whether to use deepspeed to train the model"""
     print_sample_output_freq: int = 100
     """How often to print sample output"""
-    run_eval: bool = True
+    run_eval: bool = False
     """Whether to run evaluation"""
 
     # optimizer args
@@ -131,13 +131,13 @@ class Args:
     """The batch size per GPU (HF's `per_device_train_batch_size` * `gradient_accumulation_steps`)"""
 
     # other args
-    base_model: str = "models/sft_tldr_pythia_1_4b"
+    base_model: str = "models/sft_tldr_pythia_1.4b"
     """the name of the pretrained model to use"""
     offload: bool = False
     """Whether to offload ref policy and reward model to CPU"""
     reward_model_path: str = "models/rm_sft_tldr_pythia_1_4b"
     """the name of the pretrained model to use"""
-    sft_model_path: str = "models/sft_tldr_pythia_1_4b"
+    sft_model_path: str = "models/sft_tldr_pythia_1.4b"
     """the name of the pretrained model to use"""
     dropout_layer_keys: List[str] = field(
         default_factory=lambda: ["attn_pdrop", "embd_pdrop", "resid_pdrop", "summary_first_dropout"]
@@ -305,13 +305,13 @@ def forward(model, query_responses, tokenizer, ref=False):
     attention_mask = query_responses != tokenizer.pad_token_id
     input_ids = torch.masked_fill(query_responses, ~attention_mask, 0)
     if ref:
-        with model.disable_adapter():
-            return model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                return_dict=True,
-                output_hidden_states=True,
-            )
+        # with model.disable_adapter():
+        return model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            return_dict=True,
+            output_hidden_states=True,
+        )
     else:
         return model(
             input_ids=input_ids,
@@ -477,13 +477,13 @@ if __name__ == "__main__":
         pprint(reward_model.config)
 
     policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
-    peft_config = LoraConfig(
-        r=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-    )
-    policy = get_peft_model(policy, peft_config=peft_config)
+    # peft_config = LoraConfig(
+    #     r=args.lora_rank,
+    #     lora_alpha=args.lora_alpha,
+    #     lora_dropout=args.lora_dropout,
+    #     bias="none",
+    # )
+    # policy = get_peft_model(policy, peft_config=peft_config)
     accelerator.print(policy)
     policy.generation_config.eos_token_id = None  # disable `pad_token_id` and `eos_token_id` because we just want to
     policy.generation_config.pad_token_id = None  # generate tokens without truncation / padding
@@ -566,7 +566,7 @@ if __name__ == "__main__":
     ratio_stats = torch.zeros(stats_shape, device=device)
 
     policy.train()
-    for update in range(1, args.rebel.num_updates + 1):
+    for update in tqdm(range(1, args.rebel.num_updates + 1)):
         global_step += 1 * args.batch_size
         frac = 1.0 - (update - 1.0) / args.rebel.num_updates
         lrnow = frac * args.lr
@@ -773,8 +773,12 @@ if __name__ == "__main__":
 
                     ratio_logprob = new_logprobs - mb_logprobs
                     ratio_logprob = ratio_logprob[:args.per_device_train_batch_size] - ratio_logprob[args.per_device_train_batch_size:]
-                    reg_diff = ratio_logprob - args.rebel.eta * (mb_rewards[:args.per_device_train_batch_size] - mb_rewards[args.per_device_train_batch_size:])
-                    loss = (reg_diff ** 2).mean()
+
+                    # reg_diff = ratio_logprob - args.rebel.eta * (mb_rewards[:args.per_device_train_batch_size] - mb_rewards[args.per_device_train_batch_size:])
+                    # loss = (reg_diff ** 2).mean()
+
+                    signed_diff = ratio_logprob * torch.sign(mb_rewards[:args.per_device_train_batch_size] - mb_rewards[args.per_device_train_batch_size:])
+                    loss = -F.logsigmoid(0.05 * signed_diff).mean()
 
                     accelerator.backward(loss)
                     optimizer.step()

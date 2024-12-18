@@ -39,8 +39,7 @@ from peft import LoraConfig, get_peft_model
 # a patch
 @dataclass
 class TaskHParams:
-    label_dataset: str = "gswamy/pythia-1.4b-tldr-gpt-pair-iter-1"
-    # label_dataset: str = "vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144"
+    label_dataset: str = "vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144"
     """the name of the dataset to use for labels in `https://huggingface.co/datasets/vwxyzjn/lm-human-preferences`"""
     num_train: int = 92832
     """number of training samples"""
@@ -86,29 +85,29 @@ class Args:
 
     num_train_epochs: int = 1
     """Number of epochs to train"""
-    gradient_accumulation_steps: int = 11
+    gradient_accumulation_steps: int = 4
     """The number of gradient accumulation steps"""
-    per_device_train_batch_size: int = 4
+    per_device_train_batch_size: int = 2
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
     per_device_eval_batch_size: int = 2
     """per rank eval batch size"""
 
     # optional args filled while running
-    world_size: Optional[int] = 2
+    world_size: Optional[int] = 4
     """The number of processes (GPUs) to use"""
     num_updates: Optional[int] = None
     """The number of updates to train"""
     total_episodes: Optional[int] = None
     """The total number of episodes in the dataset"""
-    batch_size: Optional[int] = 128
+    batch_size: Optional[int] = 64
     """The batch size across devices (HF's `per_device_train_batch_size` * `world_size` * `gradient_accumulation_steps`)"""
 
     # other args
     base_model: str = "./models/sft_tldr_pythia_1_4b"
     """the name of the pretrained model to use"""
-    output_dir: str = "models/gpt_rm_sft_tldr_pythia_1_4b"
+    output_dir: str = "models/rm_sft_tldr_pythia_1_4b"
     """Where to save the model"""
-    lora: bool = False
+    lora: bool = True
     """Whether to use lora"""
     lora_rank: int = 1024
     """the rank of the lora matrix"""
@@ -264,47 +263,43 @@ if __name__ == "__main__":
     dataset = dataset.with_format(
         "torch",
         columns=[
-            # "query_token",
-            # "chosen_token",
-            # "query_chosen_token",
-            # "rejected_token",
-            # "query_rejected_token",
-            # "batch",
-            # "split",
-            "iter_1_worst_query_response",
-            "iter_1_worst_mask",
-            "iter_1_best_query_response",
-            "iter_1_best_mask",
+            "query_token",
+            "chosen_token",
+            "query_chosen_token",
+            "rejected_token",
+            "query_rejected_token",
+            "batch",
+            "split",
         ],
     )
     dataloader = DataLoader(dataset, batch_size=args.per_device_train_batch_size, shuffle=True)
 
-    # eval_datasets = []
-    # eval_dataloaders = {}
-    # for split in ["validation", "validation_cnndm"]:
-    #     validation_dataset = load_dataset(args.task.label_dataset, split=split).flatten()
-    #     validation_dataset = validation_dataset.with_format(
-    #         "torch",
-    #         columns=[
-    #             "query_token",
-    #             "choice",
-    #             "chosen_token",
-    #             "query_chosen_token",
-    #             "rejected_token",
-    #             "query_rejected_token",
-    #             "batch",
-    #             "split",
-    #             "extra.confidence",
-    #             "chosen_policy",
-    #             "rejected_policy",
-    #             "policies",
-    #         ],
-    #     )
-    #     eval_datasets.append(validation_dataset)
-    #     eval_dataloaders[split] = DataLoader(validation_dataset, batch_size=args.per_device_eval_batch_size)
+    eval_datasets = []
+    eval_dataloaders = {}
+    for split in ["validation", "validation_cnndm"]:
+        validation_dataset = load_dataset(args.task.label_dataset, split=split).flatten()
+        validation_dataset = validation_dataset.with_format(
+            "torch",
+            columns=[
+                "query_token",
+                "choice",
+                "chosen_token",
+                "query_chosen_token",
+                "rejected_token",
+                "query_rejected_token",
+                "batch",
+                "split",
+                "extra.confidence",
+                "chosen_policy",
+                "rejected_policy",
+                "policies",
+            ],
+        )
+        eval_datasets.append(validation_dataset)
+        eval_dataloaders[split] = DataLoader(validation_dataset, batch_size=args.per_device_eval_batch_size)
     
     accelerator.print('num_batches:', len(dataloader))
-    # accelerator.print("The number of samples in validation_dataset", len(eval_datasets[0])+len(eval_datasets[1]))
+    accelerator.print("The number of samples in validation_dataset", len(eval_datasets[0])+len(eval_datasets[1]))
     accelerator.print("The number of samples in dataset", len(dataset))
     args.total_episodes = len(dataset)
     args.num_updates = args.total_episodes // args.batch_size
@@ -366,7 +361,7 @@ if __name__ == "__main__":
         deepspeed_states.deepspeed_config["train_micro_batch_size_per_gpu"] = args.per_device_train_batch_size
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
-    # eval_dataloaders = {split: accelerator.prepare(eval_dataloader) for split, eval_dataloader in eval_dataloaders.items()}
+    eval_dataloaders = {split: accelerator.prepare(eval_dataloader) for split, eval_dataloader in eval_dataloaders.items()}
 
     accelerator.print("===training model===")
     losses = torch.zeros(args.gradient_accumulation_steps, device=device)
@@ -380,16 +375,13 @@ if __name__ == "__main__":
     for epoch in range(args.num_train_epochs):
         accelerator.print(f"epoch: {epoch}")
         for data in tqdm(dataloader):
-            # query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
-            query_responses = torch.cat((data["iter_1_best_query_response"], data["iter_1_worst_query_response"]), dim=0)
+            query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
 
             with accelerator.accumulate(model):
                 predicted_reward = get_reward(model, query_responses, tokenizer)
 
-                # chosen_rewards = predicted_reward[:data['query_chosen_token'].shape[0]]
-                # rejected_rewards = predicted_reward[data['query_chosen_token'].shape[0]:]
-                chosen_rewards = predicted_reward[:data['iter_1_best_query_response'].shape[0]]
-                rejected_rewards = predicted_reward[data['iter_1_best_query_response'].shape[0]:]
+                chosen_rewards = predicted_reward[:data['query_chosen_token'].shape[0]]
+                rejected_rewards = predicted_reward[data['query_chosen_token'].shape[0]:]
 
                 accuracy = (chosen_rewards > rejected_rewards).float().mean()
 
@@ -416,28 +408,28 @@ if __name__ == "__main__":
                 writer.add_scalar("train/rm/lr", scheduler.get_last_lr()[0], update)
                 accelerator.print(f"{train_accuracy=}, {scheduler.get_last_lr()=}, {optimizer.param_groups[0]['lr']=}, {update=}")
 
-    # if args.run_eval:
-    #     accelerator.print('evaluting model')
-    #     for eval_split in eval_dataloaders:
-    #         evaluate_df = evaluate(args, accelerator, tokenizer, model, eval_dataloaders[eval_split])
-    #         for split, row in evaluate_df[["split", "accuracy"]].groupby(["split"]).mean().iterrows():
-    #             writer.add_scalar(f"eval/rm/{eval_split}/accuracy/split/{split}", row["accuracy"], update)
-    #             accelerator.print(f"eval/rm/{eval_split}/accuracy/split/{split}: {row['accuracy']}")
-    #         for batch, row in evaluate_df[["batch", "accuracy"]].groupby(["batch"]).mean().iterrows():
-    #             writer.add_scalar(f"eval/rm/{eval_split}/accuracy/batch/{batch}", row["accuracy"], update)
-    #             accelerator.print(f"eval/rm/{eval_split}/accuracy/batch/{batch}: {row['accuracy']}")
-    #         for confi, row in evaluate_df[["confidence", "accuracy"]].groupby(["confidence"]).mean().iterrows():
-    #             writer.add_scalar(f"eval/rm/{eval_split}/accuracy/confidence/{confi}", row["accuracy"], update)
-    #             accelerator.print(f"eval/rm/{eval_split}/accuracy/confidence/{confi}: {row['accuracy']}")
-    #         writer.add_scalar(f"eval/rm/{eval_split}/accuracy", evaluate_df["accuracy"].mean(), update)
-    #         accelerator.print(f"eval/rm/{eval_split}/accuracy: {evaluate_df['accuracy'].mean()}")
-    #         if accelerator.is_main_process:
-    #             os.makedirs(f"eval_tables/{run_name}", exist_ok=True)
-    #             evaluate_df.to_csv(f"eval_tables/{run_name}/eval_{eval_split}_{update}.csv")
-    #             if args.track:
-    #                 wandb.log({f"samples/{eval_split}/query_responses": wandb.Table(dataframe=evaluate_df)}, step=update)
-    #         del evaluate_df
-    #         torch.cuda.empty_cache()
+    if args.run_eval:
+        accelerator.print('evaluting model')
+        for eval_split in eval_dataloaders:
+            evaluate_df = evaluate(args, accelerator, tokenizer, model, eval_dataloaders[eval_split])
+            for split, row in evaluate_df[["split", "accuracy"]].groupby(["split"]).mean().iterrows():
+                writer.add_scalar(f"eval/rm/{eval_split}/accuracy/split/{split}", row["accuracy"], update)
+                accelerator.print(f"eval/rm/{eval_split}/accuracy/split/{split}: {row['accuracy']}")
+            for batch, row in evaluate_df[["batch", "accuracy"]].groupby(["batch"]).mean().iterrows():
+                writer.add_scalar(f"eval/rm/{eval_split}/accuracy/batch/{batch}", row["accuracy"], update)
+                accelerator.print(f"eval/rm/{eval_split}/accuracy/batch/{batch}: {row['accuracy']}")
+            for confi, row in evaluate_df[["confidence", "accuracy"]].groupby(["confidence"]).mean().iterrows():
+                writer.add_scalar(f"eval/rm/{eval_split}/accuracy/confidence/{confi}", row["accuracy"], update)
+                accelerator.print(f"eval/rm/{eval_split}/accuracy/confidence/{confi}: {row['accuracy']}")
+            writer.add_scalar(f"eval/rm/{eval_split}/accuracy", evaluate_df["accuracy"].mean(), update)
+            accelerator.print(f"eval/rm/{eval_split}/accuracy: {evaluate_df['accuracy'].mean()}")
+            if accelerator.is_main_process:
+                os.makedirs(f"eval_tables/{run_name}", exist_ok=True)
+                evaluate_df.to_csv(f"eval_tables/{run_name}/eval_{eval_split}_{update}.csv")
+                if args.track:
+                    wandb.log({f"samples/{eval_split}/query_responses": wandb.Table(dataframe=evaluate_df)}, step=update)
+            del evaluate_df
+            torch.cuda.empty_cache()
 
     norm_dataset = load_dataset(args.task.query_dataset, split="train")
     norm_dataset = norm_dataset.with_format("torch", columns=["query_token", "reference_response_token"])
