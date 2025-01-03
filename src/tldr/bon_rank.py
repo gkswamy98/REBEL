@@ -31,6 +31,7 @@ import torch.nn.functional as F
 import random
 import warnings
 import numpy as np
+import os
 
 warnings.filterwarnings("ignore")
 
@@ -43,11 +44,10 @@ def set_seed(seed=5775709):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="models/sft_tldr_pythia_1.4b")
-    parser.add_argument("--reward_model", type=str, default="models/rm_sft_tldr_pythia_1_4b")
+    parser.add_argument("--model", type=str, default="/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b")
+    parser.add_argument("--reward_model", type=str, default="/data/user_data/gswamy/models/models/rm_sft_tldr_pythia_1.4b_1")
     parser.add_argument("--eval_df_path", type=str, default="eval_df.csv")
     parser.add_argument("--iter", type=int, default=0)
-    parser.add_argument("--output_repo", type=str, default="gswamy/pythia-1.4B-tldr-ws-iter-")
     parser.add_argument("--prompts", type=str, default="cleanrl/summarize_from_feedback_oai_preprocessing_1705009345")
     parser.add_argument("--branch", type=str, default="train")
     parser.add_argument("--maxlen", type=int, default=53)
@@ -196,7 +196,7 @@ def main():
 
         for batch in tqdm(DataLoader(
             torch.utils.data.TensorDataset(all_query_response),
-            batch_size=128,
+            batch_size=64,
             shuffle=False,
             num_workers=0,
         )):
@@ -208,17 +208,20 @@ def main():
         all_rewards = torch.where(contain_pad_token, all_rewards, torch.full_like(all_rewards, -1e6))
         bon_rewards.append(all_rewards)
     
+    gm = args.eval_df_path.split("/")[-2]
+    rm = args.reward_model.split("/")[-1]
+    os.makedirs(f"/data/user_data/gswamy/eval_bon/{gm}", exist_ok=True)
+    os.makedirs(f"/data/user_data/gswamy/eval_bon/{gm}/{rm}", exist_ok=True)
     bon_rewards = torch.stack(bon_rewards, dim=1)
-    for n in tqdm([0, 1, 2, 3, 4, 5, 10, 15, 20, 25]):
-        best_idx = torch.argmax(bon_rewards[:, :n+1], dim=1)
+    for n in tqdm([1, 2, 5, 10, 25]):
+        best_idx = torch.argmax(bon_rewards[:, :n], dim=1)
         bon = []
         for i in range(len(eval_df)):
             bon.append(all_responses[i][best_idx[i]])
         eval_df_n = eval_df.copy()
         del eval_df_n["postprocessed_responses"]
         eval_df_n["postprocessed_response"] = bon
-        eval_df_n.to_csv(f"runs/bon_global_2/table_{n}.csv")
-
+        eval_df_n.to_csv(f"/data/user_data/gswamy/eval_bon/{gm}/{rm}/table_{n}.csv")
 
     # dataset.push_to_hub(args.output_repo + str(args.iter))
 

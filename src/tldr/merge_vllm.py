@@ -31,6 +31,7 @@ import random
 import warnings
 import numpy as np
 
+
 warnings.filterwarnings("ignore")
 
 def set_seed(seed=5775709):
@@ -42,10 +43,10 @@ def set_seed(seed=5775709):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="models/sft_tldr_pythia_1.4b")
-    parser.add_argument("--reward_model", type=str, default="models/rm_sft_tldr_pythia_1_4b")
-    parser.add_argument("--iter", type=int, default=0)
-    parser.add_argument("--output_repo", type=str, default="gswamy/pythia-1.4B-tldr-gptrm-pair-iter-")
+    parser.add_argument("--model", type=str, default="/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b")
+    parser.add_argument("--reward_model", type=str, default="/data/user_data/gswamy/models/models/rm_sft_tldr_pythia_1.4b")
+    parser.add_argument("--iter", type=int, default=1)
+    parser.add_argument("--output_repo", type=str, default="gswamy/pythia-1.4B-tldr-")
     parser.add_argument("--prompts", type=str, default="cleanrl/summarize_from_feedback_oai_preprocessing_1705009345")
     parser.add_argument("--branch", type=str, default="train")
     parser.add_argument("--maxlen", type=int, default=53)
@@ -62,7 +63,7 @@ def main():
     # init
     args = parse_arguments()
 
-    accelerator = Accelerator(gradient_accumulation_steps=8)
+    # accelerator = Accelerator(gradient_accumulation_steps=8)
 
     print("Loading dataset")
 
@@ -76,11 +77,16 @@ def main():
     QRs = []
     Ms = []
 
+    gen = args.model.split("/")[-1]
+    rm = args.reward_model.split("/")[-1]
+
+    print(args.p)
     for p in tqdm(range(0, args.p)):
-        all_query_responses = torch.load(f"./temp_datastore/all_query_responses_iter_{args.iter}_samp_{p}_vllm_temp.pt").tolist()
-        all_masks = torch.load(f"./temp_datastore/all_masks_iter_{args.iter}_samp_{p}_vllm_temp.pt").tolist()
+        print(p)
+        all_query_responses = torch.load(f"/data/user_data/gswamy/gen/{gen}/{rm}/all_query_response_iter_{args.iter}_samp_{p}.pt").tolist()
+        all_masks = torch.load(f"/data/user_data/gswamy/gen/{gen}/{rm}/all_masks_iter_{args.iter}_samp_{p}.pt").tolist()
         # all_decoded = torch.load(f"./temp_datastore/all_decoded_iter_{args.iter}_samp_{p}_ws.pt")
-        all_rewards = torch.load(f"./temp_datastore/all_rewards_iter_{args.iter}_samp_{p}_vllm_temp.pt").tolist()
+        all_rewards = torch.load(f"/data/user_data/gswamy/gen/{gen}/{rm}/all_rewards_iter_{args.iter}_samp_{p}.pt").tolist()
         R.append(torch.tensor(all_rewards))
         QRs.append(all_query_responses)
         Ms.append(all_masks)
@@ -121,7 +127,7 @@ def main():
     # dataset = dataset.add_column(f"iter_{args.iter}_worst_mask", worst_masks)
     # dataset = dataset.add_column(f"iter_{args.iter}_best_reward", best_rewards.tolist())
     # dataset = dataset.add_column(f"iter_{args.iter}_worst_reward", worst_rewards.tolist())
-    dataset.push_to_hub(args.output_repo + str(args.iter))
+    dataset.push_to_hub(args.output_repo + gen + "_" + rm + "_iter_" + str(args.iter))
 
 
 if __name__ == "__main__":

@@ -76,7 +76,7 @@ class Args:
     "the user or org name of the model repository from the Hugging Face Hub"
     deepspeed: bool = True
     """Whether to use deepspeed to train the model"""
-    run_eval: bool = True
+    run_eval: bool = False
     """Whether to run evaluation"""
 
     # optimizer args
@@ -113,7 +113,7 @@ class Args:
     # other args
     base_model: str = "EleutherAI/pythia-1.4b-deduped"
     """the name of the pretrained model to use"""
-    output_dir: str = "models/sft_tldr_pythia_1_4b"
+    output_dir: str = "models/sft_tldr_pythia_1.4b"
     """Where to save the model"""
     lora: bool = False
     """Whether to use lora"""
@@ -381,7 +381,7 @@ if __name__ == "__main__":
     update = 0
     for epoch in range(args.num_train_epochs):
         accelerator.print(f"epoch: {epoch}")
-        for data in dataloader:
+        for data in tqdm(dataloader):
             query_responses = data["query_reference_response_token"].to(device, non_blocking=True)
             with accelerator.accumulate(model):
                 output = forward(model, query_responses, tokenizer)

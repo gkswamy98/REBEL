@@ -103,7 +103,7 @@ class Args:
     """The batch size across devices (HF's `per_device_train_batch_size` * `world_size` * `gradient_accumulation_steps`)"""
 
     # other args
-    base_model: str = "./models/sft_tldr_pythia_1.4b"
+    base_model: str = "/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b"
     """the name of the pretrained model to use"""
     output_dir: str = "models/trash"
     """Where to save the model"""
@@ -205,11 +205,11 @@ def evaluate(args: Args, accelerator, tokenizer, model, dataloader):
     with torch.no_grad():
         items = defaultdict(list)
         for data in tqdm(dataloader):
-            # choice = data["choice"].reshape(-1, 1)
-            # chosen_token = data["query_response0_token"] * (1 - choice) + data["query_response1_token"] * choice
-            # rejected_token = data["query_response1_token"] * (1 - choice) + data["query_response0_token"] * choice
-            chosen_token = data["iter_1_best_query_response"]
-            rejected_token = data["iter_1_worst_query_response"]
+            choice = data["choice"].reshape(-1, 1)
+            chosen_token = data["query_response0_token"] * (1 - choice) + data["query_response1_token"] * choice
+            rejected_token = data["query_response1_token"] * (1 - choice) + data["query_response0_token"] * choice
+            # chosen_token = data["iter_1_best_query_response"]
+            # rejected_token = data["iter_1_worst_query_response"]
             
             query_responses = torch.cat((chosen_token, rejected_token), dim=0)
             with accelerator.accumulate(model):
@@ -241,6 +241,8 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
     local_seed = args.seed + accelerator.process_index * 100003  # Prime
+
+    rm_name = args.reward_model_path.split("/")[-1]
 
     random.seed(local_seed)
     np.random.seed(local_seed)
@@ -277,19 +279,19 @@ if __name__ == "__main__":
 
     eval_datasets = []
     eval_dataloaders = {}
-    for split in ["train"]: #["validation", "validation_cnndm"]:
-        validation_dataset = load_dataset("gswamy/pythia-1.4B-tldr-gpt-val2", split=split).flatten()
+    for split in ["validation"]:
+        validation_dataset = load_dataset(args.task.label_dataset, split=split).flatten()
         validation_dataset = validation_dataset.with_format(
             "torch",
             columns=[
-                # "query_token",
-                # "choice",
-                # "response0_token",
-                # "query_response0_token",
-                "iter_1_best_query_response",
-                "iter_1_worst_query_response",
-                # "response1_token",
-                # "query_response1_token",
+                "query_token",
+                "choice",
+                "response0_token",
+                "query_response0_token",
+                # "iter_1_best_query_response",
+                # "iter_1_worst_query_response",
+                "response1_token",
+                "query_response1_token",
                 # "batch",
                 # "split",
                 # "extra.confidence",
@@ -322,7 +324,7 @@ if __name__ == "__main__":
             )
             file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
             wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
-        writer = SummaryWriter(f"runs/{run_name}")
+        writer = SummaryWriter(f"/data/user_data/gswamy/eval_rm/{rm_name}")
         writer.add_text(
             "hyperparameters",
             "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -389,12 +391,17 @@ if __name__ == "__main__":
         accelerator.print(f"eval/rm/{eval_split}/accuracy: {evaluate_df['accuracy'].mean()}")
 
         if accelerator.is_main_process:
-            os.makedirs(f"eval_tables/{run_name}", exist_ok=True)
-            evaluate_df.to_csv(f"eval_tables/{run_name}/eval_{eval_split}_{update}.csv")
+            os.makedirs(f"/data/user_data/gswamy/eval_rm/{rm_name}/", exist_ok=True)
+            evaluate_df.to_csv(f"/data/user_data/gswamy/eval_rm/{rm_name}/eval_{eval_split}_{update}.csv")
 
             if eval_split != "validation_cnndm":
-                np.save(f"eval_tables/{run_name}/validation_odds.npy", evaluate_df["odds"].to_numpy())
-                np.save(f"eval_tables/{run_name}/validation_acc.npy", evaluate_df["accuracy"].to_numpy())
+                np.save(f"/data/user_data/gswamy/eval_rm/{rm_name}/validation_odds.npy", evaluate_df["odds"].to_numpy())
+                np.save(f"/data/user_data/gswamy/eval_rm/{rm_name}/validation_acc.npy", evaluate_df["accuracy"].to_numpy())
+                likelihood = evaluate_df["odds"].mean()
+                with open(f"/data/user_data/gswamy/eval_rm/{rm_name}/likelihood.txt", "w") as f:
+                    f.write(str(likelihood))
+                print(f"rm: {rm_name}, likelihood: {likelihood}")
+
                 
             accelerator.print(f"saved evaluation table to eval_tables/{run_name}/eval_{eval_split}_{update}.csv")
             if args.track:

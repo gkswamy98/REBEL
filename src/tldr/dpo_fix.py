@@ -74,7 +74,7 @@ class TaskHParams:
 @dataclass
 class Args:
     # common args
-    iter: int = 1
+    iter: int = 2
     """the iteration number"""
     exp_name: str = "pythia_1.4_dpo"
     """the name of this experiment"""
@@ -121,7 +121,7 @@ class Args:
     """Number of epochs to train"""
     num_updates: Optional[int] = None
     """The number of updates to train"""
-    gradient_accumulation_steps: int = 8 # 32 / (num_gpus) = gradient_accumulation_steps
+    gradient_accumulation_steps: int = 4 # 32 / (num_gpus) = gradient_accumulation_steps
     """The number of gradient accumulation steps"""
     local_micro_batch_size: int = 4
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
@@ -138,11 +138,11 @@ class Args:
 
     # other args
     #base_model: str = "EleutherAI/pythia-160m"
-    base_model: str = "./models/sft_tldr_pythia_1_4b"
+    base_model: str = "/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b"
     """the name of the pretrained model to use"""
-    reward_model: str = "./models/rm_sft_tldr_pythia_1_4b"
+    reward_model: str = "/data/user_data/gswamy/models/models/rm_sft_tldr_pythia_1.4b_1"
     """the name of the reward model to use"""
-    local_reward_model: str = "./models/local_rm_tldr_pythia_1.4b"
+    local_reward_model: str = "/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b"
     """the name of the local reward model"""
     dropout_layer_keys: List[str] = field(
         default_factory=lambda: ["attn_pdrop", "embd_pdrop", "resid_pdrop", "summary_first_dropout"]
@@ -150,7 +150,7 @@ class Args:
     """Which layers to apply dropout to"""
     output_dir: str = "models/dpo_policy_model_1_4b"
     """Where to save the model"""
-    label_dataset: str = "gswamy/pythia-1.4b-tldr-gpt-pair-iter-"
+    label_dataset: str = "gswamy/pythia-1.4B-tldr-"
     """the name of the dataset to use for labels in `https://huggingface.co/datasets/vwxyzjn/lm-human-preferences`"""
     ipo: bool = False
     """Whether to use IPO loss https://arxiv.org/abs/2310.12036"""
@@ -158,6 +158,8 @@ class Args:
     """Label smoothing for DPO (Eq. 3 https://ericmitchell.ai/cdpo.pdf; label_smoothing=0 gives original DPO (Eq. 7 of https://arxiv.org/pdf/2305.18290.pdf))"""
     beta: float = 0.05
     """The beta value for DPO"""
+    sft_aug: bool = False
+    """Whether to use SFT augmentation"""
     task: TaskHParams = field(default_factory=TaskHParams)
     label: LabelHParams = field(default_factory=LabelHParams)
 
@@ -474,9 +476,15 @@ if __name__ == "__main__":
         args.task.truncate_token_id = tokenizer.eos_token_id
 
     # load dataset
-    dataset = load_dataset(args.label_dataset + str(args.iter - 1), split="train")
+    gen = args.base_model.split("/")[-1]
+    rm = args.reward_model.split("/")[-1]
+
+    dataset = load_dataset(args.label_dataset + gen + "_" + rm + "_iter_" + str(args.iter - 1), split="train")
+    if args.sft_aug and 'sft' in args.base_model:
+        dataset = dataset.select(range(209580))
+    else:
+        dataset = dataset.select(range(args.label.num_train))
     dataset = dataset.shuffle(seed=local_seed)
-    dataset = dataset.select(range(args.label.num_train))
     dataset = dataset.with_format(
         "torch",
         columns=[
@@ -581,7 +589,6 @@ if __name__ == "__main__":
     # model = get_peft_model(model, peft_config=peft_config)
 
     ref_model = AutoModelForCausalLM.from_pretrained(args.base_model)
-    # ref_model = AutoModelForCausalLM.from_pretrained("models/sft_tldr_pythia_1.4b")  
     local_reward_model = AutoModelForCausalLM.from_pretrained(args.local_reward_model)
 
     reward_model: PreTrainedModel = ScalarModel.from_pretrained(args.reward_model, trust_remote_code=True)

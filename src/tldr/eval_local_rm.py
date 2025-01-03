@@ -37,6 +37,12 @@ from transformers import (
 )
 from peft import get_peft_model, LoraConfig
 from vllm import LLM, SamplingParams
+from vllm.distributed.parallel_state import (
+    destroy_model_parallel,
+    destroy_distributed_environment,
+)
+import gc
+import contextlib
 
 
 
@@ -136,11 +142,11 @@ class Args:
 
     # other args
     #base_model: str = "EleutherAI/pythia-160m"
-    base_model: str = "./models/sft_tldr_pythia_1.4b"
+    base_model: str = "/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b"
     """the name of the pretrained model to use"""
-    reward_model: str = "./models/rm_sft_tldr_pythia_1_4b"
+    reward_model: str = "/data/user_data/gswamy/models/models/rm_tldr_pythia_1.4b"
     """the name of the reward model to use"""
-    local_reward_model: str = "./models/local_rm_sft_tldr_pythia_1_4b"
+    local_reward_model: str = ""
     """the name of the local reward model to use"""
     dropout_layer_keys: List[str] = field(
         default_factory=lambda: ["attn_pdrop", "embd_pdrop", "resid_pdrop", "summary_first_dropout"]
@@ -154,8 +160,10 @@ class Args:
     """Whether to use IPO loss https://arxiv.org/abs/2310.12036"""
     label_smoothing: float = 0.0
     """Label smoothing for DPO (Eq. 3 https://ericmitchell.ai/cdpo.pdf; label_smoothing=0 gives original DPO (Eq. 7 of https://arxiv.org/pdf/2305.18290.pdf))"""
-    beta: float = 1.0
+    beta: float = 0.05
     """The beta value for DPO"""
+    use_ref: bool = False
+    """Whether to use the reference prob in the reward model"""
     task: TaskHParams = field(default_factory=TaskHParams)
     label: LabelHParams = field(default_factory=LabelHParams)
 
@@ -231,6 +239,7 @@ def truncate_response(args, tokenizer, responses):
 
 def evaluate_rm(args: Args, accelerator, tokenizer, model, dataset):
     # model.eval()
+    
     sampling_params = SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1)
 
     query_response_0 = dataset["query_response0"]
@@ -253,13 +262,56 @@ def evaluate_rm(args: Args, accelerator, tokenizer, model, dataset):
         all_rewards_1.append(reward_all)
     all_rewards_1 = torch.tensor(all_rewards_1).to(accelerator.device)
 
+    print("destroying model parallel")
+    destroy_model_parallel()
+    del model.llm_engine.model_executor.driver_worker
+    del model.llm_engine.model_executor
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    if args.use_ref:
+        print("trying to create model parallel")
+        ref_model = LLM(
+                model=args.base_model,
+                tensor_parallel_size=1,
+                distributed_executor_backend='mp',
+                disable_custom_all_reduce=True,
+        )    
+        query_response_0_ref = dataset["query_response0"]
+        outputs_0_ref = ref_model.generate(prompts=query_response_0_ref, sampling_params=sampling_params)
+        all_rewards_0_ref = []
+        for output in outputs_0_ref:
+            logprobs = [list(x.values())[0].logprob for x in output.prompt_logprobs[1:]]
+            reward_all = torch.sum(torch.tensor(logprobs))
+            # reward_last = torch.tensor(logprobs[-1]) # last token
+            all_rewards_0_ref.append(reward_all)
+        all_rewards_0_ref = torch.tensor(all_rewards_0_ref).to(accelerator.device)
+
+        query_response_1_ref = dataset["query_response1"]
+        outputs_1_ref = ref_model.generate(prompts=query_response_1_ref, sampling_params=sampling_params)
+        all_rewards_1_ref = []
+        for output in outputs_1_ref:
+            logprobs = [list(x.values())[0].logprob for x in output.prompt_logprobs[1:]]
+            reward_all = torch.sum(torch.tensor(logprobs))
+            # reward_last = torch.tensor(logprobs[-1]) # last token
+            all_rewards_1_ref.append(reward_all)
+        all_rewards_1_ref = torch.tensor(all_rewards_1_ref).to(accelerator.device)
+
     choice = dataset["choice"].to(accelerator.device)
     chosen_rewards = all_rewards_0 * (1 - choice) + all_rewards_1 * choice
     rejected_rewards = all_rewards_0 * choice + all_rewards_1 * (1 - choice)
+    
+    if args.use_ref:
+        chosen_rewards_ref = all_rewards_0_ref * (1 - choice) + all_rewards_1_ref * choice
+        rejected_rewards_ref = all_rewards_0_ref * choice + all_rewards_1_ref * (1 - choice)
+        chosen_rewards = chosen_rewards - chosen_rewards_ref
+        rejected_rewards = rejected_rewards - rejected_rewards_ref
+
     # chosen_rewards = all_rewards_0
     # rejected_rewards = all_rewards_1
     accuracy = (chosen_rewards > rejected_rewards)
-    odds = F.sigmoid((chosen_rewards - rejected_rewards) / 20.0) # TODO(gswamy): remove 1/H from here
+    odds = F.sigmoid((chosen_rewards - rejected_rewards) * args.beta)
     return pd.DataFrame(
         {
             # "query": dataset["query"],
@@ -295,6 +347,9 @@ if __name__ == "__main__":
     if args.task.truncate_token == "eos":
         args.task.truncate_token_id = tokenizer.eos_token_id
 
+    local_rm_name = args.local_reward_model.split("/")[-1]
+    print(f"local_rm: {local_rm_name}, beta: {args.beta}, use_ref: {args.use_ref}")
+
     # load dataset
     dataset = load_dataset(args.label_dataset, split="train")
     dataset = dataset.shuffle(seed=local_seed)
@@ -317,7 +372,7 @@ if __name__ == "__main__":
     dataloader = DataLoader(dataset, batch_size=args.local_micro_batch_size)
     eval_datasets = []
     eval_dataloaders = {}
-    for split in ["validation", "validation_cnndm"]:
+    for split in ["validation"]:
         validation_dataset = load_dataset(args.label_dataset, split=split).flatten()
         validation_dataset = validation_dataset.with_format(
             "torch",
@@ -388,7 +443,7 @@ if __name__ == "__main__":
             )
             # file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
             # wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
-        writer = SummaryWriter(f"runs/{run_name}")
+        writer = SummaryWriter(f"/data/user_data/gswamy/eval_rm/{local_rm_name}")
         writer.add_text(
             "hyperparameters",
             "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -406,12 +461,14 @@ if __name__ == "__main__":
     local_rm = LLM(
         model=args.local_reward_model,
         tensor_parallel_size=1,
+        distributed_executor_backend='mp',
+        disable_custom_all_reduce=True,
     )
 
     global_step = 0
     update = 0
     if args.run_eval:
-        for idx, eval_split in enumerate(["validation", "validation_cnndm"]):
+        for idx, eval_split in enumerate(["validation"]):
             print("EVAL RM")
             evaluate_df = evaluate_rm(args, accelerator, tokenizer, local_rm, eval_datasets[idx])
             print("FINISH EVAL")
@@ -435,11 +492,15 @@ if __name__ == "__main__":
             accelerator.print(f"eval/rm/{eval_split}/accuracy: {evaluate_df['accuracy'].mean()}")
             
             if accelerator.is_main_process:
-                os.makedirs(f"eval_tables/{run_name}", exist_ok=True)
-                evaluate_df.to_csv(f"eval_tables/{run_name}/eval_{eval_split}_{update}.csv")
+                os.makedirs(f"/data/user_data/gswamy/eval_rm/{local_rm_name}/", exist_ok=True)
+                evaluate_df.to_csv(f"/data/user_data/gswamy/eval_rm/{local_rm_name}/eval_{eval_split}_{update}.csv")
                 if eval_split != "validation_cnndm":
-                    np.save(f"eval_tables/{run_name}/validation_odds.npy", evaluate_df["odds"].to_numpy())
-                    np.save(f"eval_tables/{run_name}/validation_acc.npy", evaluate_df["accuracy"].to_numpy())
+                    np.save(f"/data/user_data/gswamy/eval_rm/{local_rm_name}/validation_odds.npy", evaluate_df["odds"].to_numpy())
+                    np.save(f"/data/user_data/gswamy/eval_rm/{local_rm_name}/validation_acc.npy", evaluate_df["accuracy"].to_numpy())
+                    likelihood = evaluate_df["odds"].mean()
+                    with open(f"/data/user_data/gswamy/eval_rm/{local_rm_name}/likelihood.txt", "w") as f:
+                        f.write(str(likelihood))
+                    print(f"local_rm: {local_rm_name}, likelihood: {likelihood}")
                 if args.track:
                     wandb.log({f"samples/{eval_split}/query_responses": wandb.Table(dataframe=evaluate_df)}, step=update)
             del evaluate_df

@@ -39,8 +39,7 @@ from peft import LoraConfig, get_peft_model
 # a patch
 @dataclass
 class TaskHParams:
-    label_dataset: str = "gswamy/pythia-1.4b-tldr-gpt-pair-iter-1"
-    # label_dataset: str = "vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144"
+    label_dataset: str = "vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144"
     """the name of the dataset to use for labels in `https://huggingface.co/datasets/vwxyzjn/lm-human-preferences`"""
     num_train: int = 92832
     """number of training samples"""
@@ -86,7 +85,7 @@ class Args:
 
     num_train_epochs: int = 1
     """Number of epochs to train"""
-    gradient_accumulation_steps: int = 11
+    gradient_accumulation_steps: int = 4
     """The number of gradient accumulation steps"""
     per_device_train_batch_size: int = 4
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
@@ -104,9 +103,9 @@ class Args:
     """The batch size across devices (HF's `per_device_train_batch_size` * `world_size` * `gradient_accumulation_steps`)"""
 
     # other args
-    base_model: str = "./models/sft_tldr_pythia_1_4b"
+    base_model: str = "/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b"
     """the name of the pretrained model to use"""
-    output_dir: str = "models/gpt_rm_sft_tldr_pythia_1_4b"
+    output_dir: str = "/data/user_data/gswamy/models/models/rm_sft_tldr_pythia_1.4b"
     """Where to save the model"""
     lora: bool = False
     """Whether to use lora"""
@@ -264,17 +263,17 @@ if __name__ == "__main__":
     dataset = dataset.with_format(
         "torch",
         columns=[
-            # "query_token",
-            # "chosen_token",
-            # "query_chosen_token",
-            # "rejected_token",
-            # "query_rejected_token",
-            # "batch",
-            # "split",
-            "iter_1_worst_query_response",
-            "iter_1_worst_mask",
-            "iter_1_best_query_response",
-            "iter_1_best_mask",
+            "query_token",
+            "chosen_token",
+            "query_chosen_token",
+            "rejected_token",
+            "query_rejected_token",
+            "batch",
+            "split",
+            # "iter_1_worst_query_response",
+            # "iter_1_worst_mask",
+            # "iter_1_best_query_response",
+            # "iter_1_best_mask",
         ],
     )
     dataloader = DataLoader(dataset, batch_size=args.per_device_train_batch_size, shuffle=True)
@@ -380,16 +379,16 @@ if __name__ == "__main__":
     for epoch in range(args.num_train_epochs):
         accelerator.print(f"epoch: {epoch}")
         for data in tqdm(dataloader):
-            # query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
-            query_responses = torch.cat((data["iter_1_best_query_response"], data["iter_1_worst_query_response"]), dim=0)
+            query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
+            # query_responses = torch.cat((data["iter_1_best_query_response"], data["iter_1_worst_query_response"]), dim=0)
 
             with accelerator.accumulate(model):
                 predicted_reward = get_reward(model, query_responses, tokenizer)
 
-                # chosen_rewards = predicted_reward[:data['query_chosen_token'].shape[0]]
-                # rejected_rewards = predicted_reward[data['query_chosen_token'].shape[0]:]
-                chosen_rewards = predicted_reward[:data['iter_1_best_query_response'].shape[0]]
-                rejected_rewards = predicted_reward[data['iter_1_best_query_response'].shape[0]:]
+                chosen_rewards = predicted_reward[:data['query_chosen_token'].shape[0]]
+                rejected_rewards = predicted_reward[data['query_chosen_token'].shape[0]:]
+                # chosen_rewards = predicted_reward[:data['iter_1_best_query_response'].shape[0]]
+                # rejected_rewards = predicted_reward[data['iter_1_best_query_response'].shape[0]:]
 
                 accuracy = (chosen_rewards > rejected_rewards).float().mean()
 

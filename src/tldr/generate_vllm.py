@@ -31,6 +31,7 @@ import torch.nn.functional as F
 import random
 import warnings
 import numpy as np
+import os
 
 warnings.filterwarnings("ignore")
 
@@ -54,6 +55,7 @@ def parse_arguments():
     parser.add_argument("--num_shards", type=int, default=1)
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--world_size", type=int, default=1)
+    parser.add_argument("--prompt_aug", type=bool, default=False)
     return parser.parse_args()
 
 def generate(lm_backbone, queries, tokenizer, generation_config):
@@ -183,10 +185,10 @@ def forward(model, query_responses, tokenizer):
 def main():
     args = parse_arguments()
 
-    set_seed(args.p * 50)
-    print("Model", args.model)
-    print("Iter", args.iter)
-    print("p", args.p)
+    llm = LLM(
+            model=args.model,
+            tensor_parallel_size=args.world_size,
+    )
 
     dataset = load_dataset(args.prompts, split=args.branch)
     tokenizer = AutoTokenizer.from_pretrained(args.model, padding_side="right", trust_remote_code=True,)
@@ -194,32 +196,36 @@ def main():
 
     sft_dataset = load_dataset("cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162", split="train")
 
-    llm = LLM(
-        model=args.model,
-        tensor_parallel_size=args.world_size,
-    )
-
     prompts = [row['query'] for row in tqdm(dataset)]
-    
-    # sft_prompts = [row['query'] for row in tqdm(sft_dataset)]
 
-    # prompts = prompts + sft_prompts  # Kiante's suggestion
+    if args.prompt_aug:
+        print("Prompt Augmentation")
+        prompts = prompts + [row['query'] for row in tqdm(sft_dataset)]
 
-    sampling_params = [SamplingParams(temperature=0.1, top_p=1.0, max_tokens=53, seed=((args.p + 1) * 50) + i) for i in range(len(prompts))]
+    for p in range(0, args.p):
+        set_seed(p * 50)
+        print("Model", args.model)
+        print("Iter", args.iter)
+        print("p", p)
 
-    outputs = llm.generate(prompts, sampling_params)
+        sampling_params = [SamplingParams(temperature=0.1, top_p=1.0, max_tokens=53, seed=((p + 1) * 50) + i) for i in range(len(prompts))]
 
-    l1 = []
-    l2 = []
+        outputs = llm.generate(prompts, sampling_params)
 
-    for output in outputs:
-        prompt = output.prompt
-        l1.append(prompt)
-        generated_text = output.outputs[0].text
-        l2.append(generated_text)
-    
-    torch.save(l1, f"./temp_datastore/all_query_iter_{args.iter}_samp_{args.p}_vllm_temp.pt")
-    torch.save(l2, f"./temp_datastore/all_response_iter_{args.iter}_samp_{args.p}_vllm_temp.pt")
+        l1 = []
+        l2 = []
+
+        for output in outputs:
+            prompt = output.prompt
+            l1.append(prompt)
+            generated_text = output.outputs[0].text
+            l2.append(generated_text)
+
+        gen = args.model.split("/")[-1]
+        os.makedirs(f"/data/user_data/gswamy/gen/{gen}", exist_ok=True)
+        
+        torch.save(l1, f"/data/user_data/gswamy/gen/{gen}/all_query_iter_{args.iter}_samp_{p}.pt")
+        torch.save(l2, f"/data/user_data/gswamy/gen/{gen}/all_response_iter_{args.iter}_samp_{p}.pt")
 
 if __name__ == "__main__":
     main()

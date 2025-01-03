@@ -41,7 +41,7 @@ from peft import get_peft_model, LoraConfig
 @dataclass
 class LabelHParams:
     type: Optional[str] = None
-    num_train: int = 92832
+    num_train: int = int(92832/2) # TODO (gswamy): change this back to 92832 
     num_labels: int = 2
     source: Optional[str] = None
 
@@ -117,7 +117,7 @@ class Args:
     """Number of epochs to train"""
     num_updates: Optional[int] = None
     """The number of updates to train"""
-    gradient_accumulation_steps: int = 16
+    gradient_accumulation_steps: int = 4
     """The number of gradient accumulation steps"""
     local_micro_batch_size: int = 4
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
@@ -134,9 +134,9 @@ class Args:
 
     # other args
     #base_model: str = "EleutherAI/pythia-160m"
-    base_model: str = "./models/sft_tldr_pythia_1_4b"
+    base_model: str = "/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b"
     """the name of the pretrained model to use"""
-    reward_model: str = "./models/rm_sft_tldr_pythia_1_4b"
+    reward_model: str = "/data/user_data/gswamy/models/models/rm_sft_tldr_pythia_1.4b_1"
     """the name of the reward model to use"""
     dropout_layer_keys: List[str] = field(
         default_factory=lambda: ["attn_pdrop", "embd_pdrop", "resid_pdrop", "summary_first_dropout"]

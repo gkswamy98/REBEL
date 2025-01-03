@@ -33,6 +33,13 @@ import warnings
 import numpy as np
 
 from vllm import LLM, SamplingParams
+import os
+
+from vllm import LLM, SamplingParams
+from vllm.distributed.parallel_state import (
+    destroy_model_parallel,
+)
+import gc
 
 warnings.filterwarnings("ignore")
 
@@ -45,9 +52,9 @@ def set_seed(seed=5775709):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="models/sft_tldr_pythia_1.4b")
-    parser.add_argument("--reward_model", type=str, default="models/rm_sft_tldr_pythia_1_4b")
-    parser.add_argument("--local_reward_model", type=str, default="models/local_rm_tldr_pythia_1.4b")
+    parser.add_argument("--model", type=str, default="/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b")
+    parser.add_argument("--reward_model", type=str, default="/data/user_data/gswamy/models/models/rm_sft_tldr_pythia_1.4b_1")
+    parser.add_argument("--local_reward_model", type=str, default="/data/user_data/gswamy/models/models/local_rm_H_lowlr_tldr_pythia_1.4b_1")
     parser.add_argument("--eval_df_path", type=str, default="eval_df.csv")
     parser.add_argument("--iter", type=int, default=0)
     parser.add_argument("--output_repo", type=str, default="gswamy/pythia-1.4B-tldr-ws-iter-")
@@ -58,6 +65,8 @@ def parse_arguments():
     parser.add_argument("--num_shards", type=int, default=1)
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--world_size", type=int, default=4)
+    parser.add_argument("--use_ref", type=bool, default=False)
+    
     return parser.parse_args()
 
 def first_true_indices(bools, dtype=torch.long):
@@ -161,26 +170,12 @@ def main():
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     left_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
-    # dataset = dataset.with_format("torch", columns=["query_token"])
-
-    # reward_model: PreTrainedModel = ScalarModel.from_pretrained(args.reward_model, trust_remote_code=True,)
-    # deepspeed_states = AcceleratorState().deepspeed_plugin
-    # deepspeed_states.deepspeed_config["train_micro_batch_size_per_gpu"] = 8
-    # eval_ds_config = {
-    #         "train_micro_batch_size_per_gpu": deepspeed_states.deepspeed_config["train_micro_batch_size_per_gpu"],
-    #         "bf16": {"enabled": True},
-    #         "prescale_gradients": False,
-    #         "wall_clock_breakdown": False,
-    # }
-    # accelerator.print(f"{eval_ds_config=}")
-    # reward_model, *_ = deepspeed.initialize(model=reward_model, config=eval_ds_config)
-    # reward_model.eval()
-
     local_rm = LLM(
         model=args.local_reward_model,
         tensor_parallel_size=1,
+        distributed_executor_backend='mp',
+        disable_custom_all_reduce=True,
     )
-
 
     eval_df = pd.read_csv(args.eval_df_path, converters={'postprocessed_responses': pd.eval})
     all_query = eval_df["query"].tolist()
@@ -210,34 +205,70 @@ def main():
             # reward = torch.tensor(logprobs[-1]) # last token
             all_rewards.append(reward)
         all_rewards = torch.tensor(all_rewards).to(accelerator.device)
-            
-        # all_rewards = torch.tensor([output.outputs[0].logprobs[0] for output in outputs]).to(accelerator.device)
-        # print(all_rewards.shape)
 
-        # for batch in tqdm(DataLoader(
-        #     torch.utils.data.TensorDataset(all_query_response),
-        #     batch_size=128,
-        #     shuffle=False,
-        #     num_workers=0,
-        # )):
-        #     query_responses = batch[0]
-        #     with torch.no_grad():
-        #         _, scores, _ = get_reward(reward_model, query_responses, tokenizer, 512)
-        #     all_rewards.append(scores)
-        # all_rewards = torch.cat(all_rewards)
         all_rewards = torch.where(contain_pad_token, all_rewards, torch.full_like(all_rewards, -1e6))
         bon_rewards.append(all_rewards)
-    
+
     bon_rewards = torch.stack(bon_rewards, dim=1)
-    for n in tqdm([0, 1, 2, 3, 4, 5, 10, 15, 20, 25]):
-        best_idx = torch.argmax(bon_rewards[:, :n+1], dim=1)
+
+    print("destroying model parallel")
+    destroy_model_parallel()
+    del local_rm.llm_engine.model_executor.driver_worker
+    del local_rm.llm_engine.model_executor
+    del local_rm
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    if args.use_ref:
+        print("trying to create model parallel")
+        ref_model = LLM(
+                model=args.model,
+                tensor_parallel_size=1,
+                distributed_executor_backend='mp',
+                disable_custom_all_reduce=True,
+        )
+        
+        bon_rewards_ref = []
+        for n in tqdm(range(N)):
+            all_response = [x[n] for x in all_responses]
+            all_response_token = tokenizer(all_response, padding=True, max_length=args.maxlen, truncation=True)
+            all_response_token = torch.tensor(all_response_token["input_ids"]).to(accelerator.device)
+
+            contain_pad_token = torch.any(all_response_token == tokenizer.pad_token_id, dim=-1)
+            
+            all_query_response = [query + response for query, response in zip(all_query, all_response)]
+            all_rewards = []
+
+            sampling_params = SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1)
+            outputs = ref_model.generate(prompts=all_query_response, sampling_params=sampling_params)
+            for output in outputs:
+                logprobs = [list(x.values())[0].logprob for x in output.prompt_logprobs[1:]]
+                reward = torch.sum(torch.tensor(logprobs))
+                # reward = torch.tensor(logprobs[-1]) # last token
+                all_rewards.append(reward)
+            all_rewards = torch.tensor(all_rewards).to(accelerator.device)
+
+            all_rewards = torch.where(contain_pad_token, all_rewards, torch.full_like(all_rewards, -1e6))
+            bon_rewards_ref.append(all_rewards)
+
+        bon_rewards_ref = torch.stack(bon_rewards_ref, dim=1)
+        bon_rewards = bon_rewards - bon_rewards_ref # subtracting the reference rewards
+
+
+    gm = args.eval_df_path.split("/")[-2]
+    rm = args.local_reward_model.split("/")[-1]
+    os.makedirs(f"/data/user_data/gswamy/eval_bon/{gm}", exist_ok=True)
+    os.makedirs(f"/data/user_data/gswamy/eval_bon/{gm}/{rm}", exist_ok=True)
+    
+    for n in tqdm([1, 2, 5, 10, 25]):
+        best_idx = torch.argmax(bon_rewards[:, :n], dim=1)
         bon = []
         for i in range(len(eval_df)):
             bon.append(all_responses[i][best_idx[i]])
         eval_df_n = eval_df.copy()
         del eval_df_n["postprocessed_responses"]
         eval_df_n["postprocessed_response"] = bon
-        eval_df_n.to_csv(f"runs/bon_dpo_dpo_rm/table_{n}.csv")
+        eval_df_n.to_csv(f"/data/user_data/gswamy/eval_bon/{gm}/{rm}/table_{n}.csv")
 
 
     # dataset.push_to_hub(args.output_repo + str(args.iter))

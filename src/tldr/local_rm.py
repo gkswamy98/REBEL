@@ -117,7 +117,7 @@ class Args:
     """Number of epochs to train"""
     num_updates: Optional[int] = None
     """The number of updates to train"""
-    gradient_accumulation_steps: int = 16
+    gradient_accumulation_steps: int = 4
     """The number of gradient accumulation steps"""
     local_micro_batch_size: int = 4
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
@@ -134,9 +134,9 @@ class Args:
 
     # other args
     #base_model: str = "EleutherAI/pythia-160m"
-    base_model: str = "./models/sft_tldr_pythia_1_4b"
+    base_model: str = "/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b"
     """the name of the pretrained model to use"""
-    reward_model: str = "./models/rm_sft_tldr_pythia_1_4b"
+    reward_model: str = "/data/user_data/gswamy/models/models/rm_sft_tldr_pythia_1.4b_1"
     """the name of the reward model to use"""
     dropout_layer_keys: List[str] = field(
         default_factory=lambda: ["attn_pdrop", "embd_pdrop", "resid_pdrop", "summary_first_dropout"]
@@ -150,7 +150,7 @@ class Args:
     """Whether to use IPO loss https://arxiv.org/abs/2310.12036"""
     label_smoothing: float = 0.0
     """Label smoothing for DPO (Eq. 3 https://ericmitchell.ai/cdpo.pdf; label_smoothing=0 gives original DPO (Eq. 7 of https://arxiv.org/pdf/2305.18290.pdf))"""
-    beta: float = 1.0 / 53.0
+    beta: float = 0.05
     """The beta value for DPO"""
     task: TaskHParams = field(default_factory=TaskHParams)
     label: LabelHParams = field(default_factory=LabelHParams)
@@ -212,7 +212,7 @@ def forward(model, query_responses, labels, mb_best, tokenizer):
     logits = output.logits[:, :-1, :]
     loss_mask = (labels != tokenizer.pad_token_id)
     per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
-    all_logps = (per_token_logps * loss_mask).sum(-1) / 53 # 53 is the response length
+    all_logps = (per_token_logps * loss_mask).sum(-1)
     chosen_logps = all_logps.view(-1, args.label.num_labels).gather(1, mb_best.view(-1, 1)).view(-1)
     rejected_logps = all_logps.view(-1, args.label.num_labels).gather(1, (1 - mb_best).view(-1, 1)).view(-1)
     return chosen_logps, rejected_logps
@@ -433,7 +433,9 @@ def evaluate_policy(args: Args, reward_model, model, ref_model, tokenizer, datal
 # def train(args: Args):
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    print("initializing accelerator")
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
+    print("accelerator initialized")
     local_seed = args.seed + accelerator.process_index * 100003  # Prime
     args.world_size = accelerator.num_processes
     args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps
@@ -451,6 +453,7 @@ if __name__ == "__main__":
         args.task.truncate_token_id = tokenizer.eos_token_id
 
     # load dataset
+    print("loading dataset")
     dataset = load_dataset(args.label_dataset, split="train")
     dataset = dataset.shuffle(seed=local_seed)
     dataset = dataset.select(range(args.label.num_train))

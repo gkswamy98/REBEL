@@ -4,6 +4,7 @@ import pandas as pd
 import random
 import time
 import argparse
+from typing import Optional
 
 template = r"""
 Which of the following summaries does a better job of summarizing the most important points in the given forum post, without including unimportant or irrelevant details? Judge based on accuracy, coverage, and coherence.
@@ -27,6 +28,7 @@ Preferred: <"A" or "B">
 def parse_args():
     parser = argparse.ArgumentParser(description="winrate")
     parser.add_argument('--file_name', type=str, default='iterative_dpo_2_8b_555134.csv')
+    parser.add_argument('--n', type=int, default=None)
     return parser.parse_args()
 
 def process_text(post, summary_a, summary_b):
@@ -88,6 +90,7 @@ def winrate(file, n_samples=64):
 
     winrate = 100 * (value_counts['ours'] / len(n))
     print(f"Winrate: {winrate}%")
+    return winrate
 
     # df.to_csv(file[:-4] + "_gpt-4o.csv", index=False)
     # print(f"Saved results {file[:-4] + '_gpt-4o.csv'}")
@@ -98,5 +101,16 @@ if __name__ == '__main__':
     n_samples = 600
     file = Path(args.file_name)
     print(args.file_name, n_samples)
-    winrate(file, n_samples=n_samples)
+    wr = winrate(file, n_samples=n_samples)
+    if args.n is not None:
+        print(f"BoN w/ N={args.n}")
+        output_file = file.parent / f"winrate_{args.n}.txt"
+        with open(output_file, "w") as f:
+            f.write(f"Winrate: {wr}%")
+        print(f"Saved winrate to {output_file}")
+    else:
+        output_file = file.parent / f"winrate.txt"
+        with open(output_file, "w") as f:
+            f.write(f"Winrate: {wr}%")
+        print(f"Saved winrate to {output_file}")
     print('total time:', time.time() - start)

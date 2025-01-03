@@ -266,10 +266,10 @@ class EvalStorage:
 def evaluate_policy(args: Args, model, tokenizer, dataloader, dataset, sampling=True):
     eval_storage = EvalStorage()
     prompts = [row['query'] for row in tqdm(dataset)]
-    # reference_responses = [row['reference_response'] for row in tqdm(dataset)]
+    reference_responses = [row['reference_response'] for row in tqdm(dataset)]
 
     eval_storage.query = prompts
-    # eval_storage.reference_response = reference_responses
+    eval_storage.reference_response = reference_responses
 
     sampling_params = [SamplingParams(temperature=0.1, top_p=1.0, max_tokens=53, seed=i) for i in range(len(prompts))]
     outputs = model.generate(prompts, sampling_params)
@@ -334,7 +334,7 @@ def evaluate_policy(args: Args, model, tokenizer, dataloader, dataset, sampling=
         {
             "query": gather_object(eval_storage.query),
             "postprocessed_responses": gather_object(eval_storage.postprocessed_responses),
-            # "reference_responses": gather_object(eval_storage.reference_response),
+            "reference_responses": gather_object(eval_storage.reference_response),
             # "kl": gather_object(eval_kl),
         }
     )
@@ -416,7 +416,10 @@ if __name__ == "__main__":
     # args.num_updates = args.total_episodes // args.batch_size
 
     console = Console(force_terminal=True)
-    run_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
+    if args.run_name is None:
+        run_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
+    else:
+        run_name = args.run_name
     writer = SimpleNamespace()  # dummy writer
     writer.add_scalar = lambda x, y, z: None
     if accelerator.is_main_process:
@@ -430,7 +433,7 @@ if __name__ == "__main__":
             )
             # file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
             # wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
-        writer = SummaryWriter(f"runs/{run_name}")
+        writer = SummaryWriter(f"/data/user_data/gswamy/bon/{run_name}")
         writer.add_text(
             "hyperparameters",
             "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -496,6 +499,7 @@ if __name__ == "__main__":
     update = 0
     if args.run_eval:
         _, evaluate_df = evaluate_policy(args, llm, tokenizer, sft_validation_dataloader, sft_validation_dataset, sampling=False)
+        os.makedirs(f"/data/user_data/gswamy/bon/{run_name}", exist_ok=True)
         if accelerator.is_main_process:
-            evaluate_df.to_csv(f"runs/{run_name}/table.csv")
-        print(f"runs/{run_name}/table.csv")
+            evaluate_df.to_csv(f"/data/user_data/gswamy/bon/{run_name}/table.csv")
+        print(f"/data/user_data/gswamy/bon/{run_name}/table.csv")

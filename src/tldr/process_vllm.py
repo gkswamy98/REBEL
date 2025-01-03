@@ -30,6 +30,7 @@ import torch.nn.functional as F
 import random
 import warnings
 import numpy as np
+import os
 
 warnings.filterwarnings("ignore")
 
@@ -42,10 +43,10 @@ def set_seed(seed=5775709):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="models/sft_tldr_pythia_1.4b")
-    parser.add_argument("--reward_model", type=str, default="models/gpt_rm_sft_tldr_pythia_1_4b") # TODO: change this to the correct model
-    parser.add_argument("--iter", type=int, default=0)
-    parser.add_argument("--output_repo", type=str, default="gswamy/pythia-1.4B-tldr-ws-iter-")
+    parser.add_argument("--model", type=str, default="/data/user_data/gswamy/models/models/sft_tldr_pythia_1.4b")
+    parser.add_argument("--reward_model", type=str, default="/data/user_data/gswamy/models/models/rm_sft_tldr_pythia_1.4b")
+    parser.add_argument("--iter", type=int, default=1)
+    parser.add_argument("--output_repo", type=str, default="gswamy/pythia-1.4B-")
     parser.add_argument("--prompts", type=str, default="cleanrl/summarize_from_feedback_oai_preprocessing_1705009345")
     parser.add_argument("--branch", type=str, default="train")
     parser.add_argument("--maxlen", type=int, default=53)
@@ -171,17 +172,21 @@ def main():
     reward_model, *_ = deepspeed.initialize(model=reward_model, config=eval_ds_config)
     reward_model.eval()
 
-    for p in range(args.p, args.p + 1):
+    gen = args.model.split("/")[-1]
+    rm = args.reward_model.split("/")[-1]
+    os.makedirs(f"/data/user_data/gswamy/gen/{gen}/{rm}", exist_ok=True)
+
+    for p in range(0, args.p):
         print(f"Processing shard {p}")
-        all_query = torch.load(f"./temp_datastore/all_query_iter_{args.iter}_samp_{p}_vllm_temp.pt")
-        all_response = torch.load(f"./temp_datastore/all_response_iter_{args.iter}_samp_{p}_vllm_temp.pt")
+        all_query = torch.load(f"/data/user_data/gswamy/gen/{gen}/all_query_iter_{args.iter}_samp_{p}.pt")
+        all_response = torch.load(f"/data/user_data/gswamy/gen/{gen}/all_response_iter_{args.iter}_samp_{p}.pt")
        
         all_query_token = left_tokenizer(all_query, padding=True, max_length=512)
         all_query_token = torch.tensor(all_query_token["input_ids"]).to(accelerator.device)
         all_response_token = tokenizer(all_response, padding=True, max_length=args.maxlen, truncation=True)
         all_response_token = torch.tensor(all_response_token["input_ids"]).to(accelerator.device)
 
-        contain_pad_token = torch.any(all_response_token == tokenizer.pad_token_id, dim=-1)
+        # contain_pad_token = torch.any(all_response_token == tokenizer.pad_token_id, dim=-1)
         
         all_query_response = torch.cat((all_query_token, all_response_token), dim=1)
         all_masks = all_query_response.clone()
@@ -199,34 +204,11 @@ def main():
                 _, scores, _ = get_reward(reward_model, query_responses, tokenizer, 512)
             all_rewards.append(scores)
         all_rewards = torch.cat(all_rewards)
-        all_rewards = torch.where(contain_pad_token, all_rewards, torch.full_like(all_rewards, -1e6))
+        # all_rewards = torch.where(contain_pad_token, all_rewards, torch.full_like(all_rewards, -1e6))
 
-        torch.save(all_query_response.detach().cpu(), f"./temp_datastore/all_query_responses_iter_{args.iter}_samp_{p}_vllm_temp.pt")
-        torch.save(all_masks.detach().cpu(), f"./temp_datastore/all_masks_iter_{args.iter}_samp_{p}_vllm_temp.pt")
-        torch.save(all_rewards.detach().cpu(), f"./temp_datastore/all_rewards_iter_{args.iter}_samp_{p}_vllm_temp.pt")
-
-        # _, scores, _ = get_reward(reward_model, all_query_response, tokenizer, 512)
-
-
-
-        # all_query_responses = []
-        # decoded = tokenizer.batch_decode(postprocessed_query_responses)
-
-        # all_query_responses = torch.load(f"./temp_datastore/all_query_responses_iter_{args.iter}_samp_{p}_ws.pt").tolist()
-        # all_masks = torch.load(f"./temp_datastore/all_masks_iter_{args.iter}_samp_{p}_ws.pt").tolist()
-        # all_decoded = torch.load(f"./temp_datastore/all_decoded_iter_{args.iter}_samp_{p}_ws.pt")
-        # all_rewards = torch.load(f"./temp_datastore/all_rewards_iter_{args.iter}_samp_{p}_ws.pt").tolist()
-        # all_logprobs = torch.load(f"./temp_datastore/all_logprobs_{p}.pt").tolist()
-
-        # print(p, len(all_query_responses), len(all_rewards), len(all_logprobs))
-
-        # dataset = dataset.add_column(f"iter_{args.iter}_query_response_{p}", all_query_responses)
-        # dataset = dataset.add_column(f"iter_{args.iter}_mask_{p}", all_masks)
-        # dataset = dataset.add_column(f"iter_{args.iter}_decoded_{p}", all_decoded)
-        # dataset = dataset.add_column(f"iter_{args.iter}_reward_{p}", all_rewards)
-        # dataset = dataset.add_column(f"iter_{args.iter}_logprob_{p}", all_logprobs)
-
-    # dataset.push_to_hub(args.output_repo + str(args.iter))
+        torch.save(all_query_response.detach().cpu(), f"/data/user_data/gswamy/gen/{gen}/{rm}/all_query_response_iter_{args.iter}_samp_{p}.pt")
+        torch.save(all_masks.detach().cpu(), f"/data/user_data/gswamy/gen/{gen}/{rm}/all_masks_iter_{args.iter}_samp_{p}.pt")
+        torch.save(all_rewards.detach().cpu(), f"/data/user_data/gswamy/gen/{gen}/{rm}/all_rewards_iter_{args.iter}_samp_{p}.pt")
 
 
 if __name__ == "__main__":

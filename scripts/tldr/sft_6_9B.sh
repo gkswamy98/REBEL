@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=sft_1_4b
-#SBATCH --output=sft_1_4b.out
+#SBATCH --job-name=sft_6_9b
+#SBATCH --output=sft_6_9b.out
 #SBATCH --partition=candle_9
 #SBATCH --qos=candle_9_qos
 #SBATCH --nodes=1
@@ -15,4 +15,6 @@ srun --jobid $SLURM_JOB_ID bash -c 'source ~/.bashrc && conda activate rebel_2\
 --main_process_port 29084 \
 --num_processes 8 \
 src/tldr/sft.py \
+--base_model EleutherAI/pythia-6.9b-deduped \
+--output_dir /data/user_data/gswamy/models/models/sft_tldr_pythia_6.9b \
 '
